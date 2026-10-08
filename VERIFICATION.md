@@ -43,6 +43,12 @@ supply a fixture inventory or save `inventorySource: "none"` in
 Downloads. A custom launch has to do the same. Do not use a real market account
 to test anything that creates or changes listings.
 
+On Windows, quitting can race Playwright's Node inspector socket and abort the
+already-quitting Electron (exit 134 or 0x80000003) after the test body passed.
+`WFHELPER_E2E_TOLERATE_SHUTDOWN_RACE=1` downgrades exactly those post-quit exits
+to warnings; exits before the harness asked to quit still fail teardown, and the
+default stays strict for CI and quiet machines.
+
 The shared harness saves console output and errors from every window, process
 output and local logs in the test's output folder. A failed check keeps
 screenshots and an Electron trace; set `WFHELPER_KEEP_TRACE=1` to keep traces

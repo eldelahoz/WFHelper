@@ -375,6 +375,21 @@ export async function closeElectronApp(
   }
 }
 
+/** Quit races Playwright's Node inspector socket teardown: on Windows the
+ *  inspector thread can abort (134) or fail-fast (0x80000003) once main has
+ *  already started quitting. Opt-in tolerance keeps the strict default for CI
+ *  and fresh machines; exits before the harness asked to quit always fail. */
+const TOLERATED_SHUTDOWN_EXITS = new Set([134, 0x8000_0003]);
+
+function toleratedShutdownExit(code: number | null): boolean {
+  return (
+    (process.env.WFHELPER_E2E_TOLERATE_SHUTDOWN_RACE ?? "").trim() === "1" &&
+    process.platform === "win32" &&
+    code !== null &&
+    TOLERATED_SHUTDOWN_EXITS.has(code)
+  );
+}
+
 export async function stopElectron(app: ElectronApplication): Promise<void> {
   const child = harnessProcesses.get(app) ?? app.process();
   if (child.exitCode !== null || child.signalCode) {
@@ -386,6 +401,7 @@ export async function stopElectron(app: ElectronApplication): Promise<void> {
   // app.close() drops Playwright's Node inspector socket while main is still logging,
   // and the InspectorIo thread then faults (0xC0000005). Closing the inspector from
   // main first lets the app quit with no debugger attached.
+  let quitInitiated = false;
   const closed = evaluateInMain(app, ({ app: electronApp }) => {
     setImmediate(() => {
       try {
@@ -396,7 +412,10 @@ export async function stopElectron(app: ElectronApplication): Promise<void> {
     });
   })
     .then(
-      () => exited,
+      () => {
+        quitInitiated = true;
+        return exited;
+      },
       () => undefined,
     )
     .then(() => app.close())
@@ -410,6 +429,13 @@ export async function stopElectron(app: ElectronApplication): Promise<void> {
     throw new Error("Electron did not close cleanly; its process tree was terminated");
   }
   if (child.exitCode !== 0 || child.signalCode) {
+    if (quitInitiated && toleratedShutdownExit(child.exitCode)) {
+      console.warn(
+        `[harness] Electron aborted after quit (${child.exitCode}/${child.signalCode}) - ` +
+          `tolerated as the inspector teardown race, not a product crash`,
+      );
+      return;
+    }
     throw new Error(`Electron process exited with ${child.exitCode}/${child.signalCode}`);
   }
 }
